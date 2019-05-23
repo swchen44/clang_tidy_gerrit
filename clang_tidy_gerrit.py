@@ -71,6 +71,7 @@ def run_tidy(sha="HEAD", is_rev_range=False):
         #patch_file = tempfile.NamedTemporaryFile()
         patch_file = tempfile.NamedTemporaryFile(prefix='review_robot.',delete=False)
         cmd = diff_cmdline + [
+            "-U0",
             "--src-prefix=%s/" % ROOT,
             "--dst-prefix=%s/" % ROOT,
             "--",
@@ -141,7 +142,7 @@ def create_gerrit_json_obj(parsed_warnings):
             })
     return {"comments": comments,
             "notify": "OWNER",
-            "omit_duplicate_comments": "true"}
+            "omit_duplicate_comments": "false"}
 
 
 def get_gerrit_revision_url(git_ref):
