@@ -31,6 +31,11 @@ import sys
 import unittest
 import tempfile
 
+from requests.exceptions import RequestException
+from pygerrit2 import GerritRestAPI
+from pygerrit2 import HTTPDigestAuthFromNetrc, HTTPBasicAuthFromNetrc
+from pygerrit2 import HTTPBasicAuth, HTTPDigestAuth
+
 from kudu_util import init_logging
 
 #ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -158,6 +163,88 @@ def get_gerrit_revision_url(git_ref):
     change_id = matches[0]
     return "%s/a/changes/%s/revisions/%s" % (GERRIT_URL, change_id, sha)
 
+def get_gerrit_sha(git_ref):
+    sha = subprocess.check_output(["git", "rev-parse", git_ref]).strip()
+    return sha
+
+
+def get_gerrit_change_id(git_ref):
+    sha = get_gerrit_sha(git_ref)
+
+    commit_msg = subprocess.check_output(
+        ["git", "show", sha])
+    matches = re.findall(r'^\s+Change-Id: (I.+)$', commit_msg, re.MULTILINE)
+    if not matches:
+        raise Exception("Could not find gerrit Change-Id for commit %s" % sha)
+    if len(matches) != 1:
+        raise Exception("Found multiple gerrit Change-Ids for commit %s" % sha)
+    change_id = matches[0]
+    return change_id
+
+
+
+def rest_get_gerrit_change_number(rest,change_id,project,branch):
+
+    change_number = 0
+
+    try:
+        query = ["change:%s" % change_id]
+
+	if len(project)>0:
+             query += ["project:%s" % project]
+	if len(branch)>0:
+             query += ["branch:%s" % branch]
+
+        query += ["limit:30"]
+
+	endpoint = "/changes/?q=%s" % "%20".join(query)
+
+	logging.info("endpoint=%s", endpoint)
+
+        changes = rest.get(endpoint)
+        logging.info("%d changes", len(changes))
+
+        for change in changes:
+            logging.info(change['change_id'])
+            logging.info(change['id'])
+            logging.info(change)
+	    change_number = change['_number']
+
+    except RequestException as err:
+        logging.error("Error: %s", str(err))
+
+    return change_number
+
+
+def rest_compose_gerrit_change_id(project,change_id):
+    import urllib
+    return  urllib.quote(project, safe='') + "~" + change_id
+
+
+def rest_post_gerrit_comments(rest, rest_change_id, revision_id, data):
+
+    # the /a/ will be appneded by pygerryt2
+    endpoint = "changes/%s/revisions/%s/review" % (rest_change_id, revision_id)
+
+    logging.info("endpoint=%s", endpoint)
+
+    r = rest.post(endpoint,
+                      data=json.dumps(gerrit_json_obj),
+                      headers={'Content-Type': 'application/json'})
+    print "Response:"
+    print r
+
+
+def rest_post_gerrit(rest,endpoint, data):
+
+    r = rest.post(endpoint,
+                      data=json.dumps(gerrit_json_obj),
+                      headers={'Content-Type': 'application/json'})
+    print "Response:"
+    print r
+
+
+
 
 def post_comments(revision_url_base, gerrit_json_obj):
     import requests
@@ -222,11 +309,6 @@ if __name__ == "__main__":
         print >>sys.stderr, "--rev-range works only with --no-gerrit"
         sys.exit(1)
 
-    # Find the gerrit revision URL, if applicable.
-    if not args.no_gerrit:
-        revision_url = get_gerrit_revision_url(args.rev)
-        print revision_url
-
     # Run clang-tidy and parse the output.
     clang_output = run_tidy(args.rev, args.rev_range)
     logging.info("Clang output")
@@ -242,8 +324,39 @@ if __name__ == "__main__":
     print "Parsed clang warnings:"
     print json.dumps(parsed, indent=4)
 
+    # Find the gerrit revision URL, if applicable.
+    if not args.no_gerrit:
+        revision_url = get_gerrit_revision_url(args.rev)
+        change_id = get_gerrit_change_id(args.rev)
+        sha = get_gerrit_sha(args.rev)
+        print ("revision_url={0}".format(revision_url))
+        print ("change_id={0}".format(change_id))
+        print ("sha={0}".format(sha))
+
+    project ="main/sub1"
+    branch = "main/sub1/master"
+
+
+
+    auth = HTTPBasicAuth(GERRIT_USER, GERRIT_PASSWORD)
+    rest = GerritRestAPI(GERRIT_URL, auth=auth)
+    change_number = str(rest_get_gerrit_change_number(rest,change_id,project,branch))
+
+    print ("change_number={0}".format(change_number))
+
     # Post the output as comments to the gerrit URL.
     gerrit_json_obj = create_gerrit_json_obj(parsed)
     print "Will post to gerrit:"
     print json.dumps(gerrit_json_obj, indent=4)
-    post_comments(revision_url, gerrit_json_obj)
+
+
+    rest_change_id = rest_compose_gerrit_change_id(project,change_number)
+
+    print ("project={0} branch={1} rest_change_id={2}".format(project, branch, rest_change_id))
+
+    rest_post_gerrit_comments(rest, rest_change_id,"current", gerrit_json_obj)
+
+
+
+
+    #post_comments(revision_url, gerrit_json_obj)
